@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.blend1
+*.blend2
+*.blend@
+build/
+dist/
+*.egg-info/
+*.zip
+.DS_Store
+Thumbs.db

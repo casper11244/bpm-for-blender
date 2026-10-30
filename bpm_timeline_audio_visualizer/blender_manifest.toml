@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+id = "bpm_timeline_audio_visualizer"
+version = "1.0.0"
+name = "BPM Timeline & Audio Visualizer"
+tagline = "Musical timeline divisions, safe keyframes, and a viewport waveform"
+maintainer = "BPM Timeline & Audio Visualizer contributors"
+type = "add-on"
+tags = ["Animation", "Sequencer"]
+blender_version_min = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Load WAV audio files for the waveform visualizer"
