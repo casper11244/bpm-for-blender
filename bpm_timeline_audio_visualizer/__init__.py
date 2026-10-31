@@ -26,9 +26,11 @@ _CLASSES = (
     operators.BPMAV_OT_reload_audio,
     operators.BPMAV_OT_play_audio,
     operators.BPMAV_OT_stop_audio,
+    operators.BPMAV_OT_move_audio,
     panels.BPMAV_PT_timeline,
     panels.BPMAV_PT_keyframes,
     panels.BPMAV_PT_audio,
+    panels.BPMAV_PT_timeline_audio,
 )
 
 
@@ -36,11 +38,17 @@ def register():
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.bpmav_settings = bpy.props.PointerProperty(type=utils.BPMAV_Settings)
+    for scene in bpy.data.scenes:
+        if scene.bpmav_settings.snap_to_music:
+            scene.tool_settings.use_snap_anim = True
+            scene.tool_settings.snap_anim_element = "MARKER"
     audio_visualizer.register()
 
 
 def unregister():
     audio_visualizer.unregister()
+    for scene in bpy.data.scenes:
+        utils.restore_snap_settings(scene)
     if hasattr(bpy.types.Scene, "bpmav_settings"):
         del bpy.types.Scene.bpmav_settings
     for cls in reversed(_CLASSES):

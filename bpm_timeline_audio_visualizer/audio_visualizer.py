@@ -16,6 +16,13 @@ _DRAW_HANDLE = None
 _AUDIO_DEVICE = None
 _AUDIO_HANDLE = None
 _AUDIO_SOUND = None
+_AUTO_PLAYBACK_ACTIVE = False
+_AUTO_AUDIO_ACTIVE = False
+_LAST_PLAYBACK_FRAME = None
+_LAST_METRONOME_BEAT = None
+_LAST_PLAYBACK_ERROR = None
+_METRONOME_SOUNDS = None
+_METRONOME_HANDLES = []
 _CACHE_BINS = 8192
 _MAX_GRID_LINES = 10000
 
@@ -25,12 +32,48 @@ def invalidate_cache():
 
 
 def stop_audio():
-    global _AUDIO_DEVICE, _AUDIO_HANDLE, _AUDIO_SOUND
+    global _AUDIO_DEVICE, _AUDIO_HANDLE, _AUDIO_SOUND, _METRONOME_HANDLES
     if _AUDIO_HANDLE is not None:
         _AUDIO_HANDLE.stop()
+    for handle in _METRONOME_HANDLES:
+        handle.stop()
+    _METRONOME_HANDLES.clear()
     _AUDIO_HANDLE = None
     _AUDIO_SOUND = None
     _AUDIO_DEVICE = None
+
+
+def reset_playback_sync():
+    global _AUTO_PLAYBACK_ACTIVE, _AUTO_AUDIO_ACTIVE
+    global _LAST_PLAYBACK_FRAME, _LAST_METRONOME_BEAT
+    _AUTO_PLAYBACK_ACTIVE = False
+    _AUTO_AUDIO_ACTIVE = False
+    _LAST_PLAYBACK_FRAME = None
+    _LAST_METRONOME_BEAT = None
+
+
+def update_audio_offset():
+    global _AUTO_PLAYBACK_ACTIVE, _AUTO_AUDIO_ACTIVE
+    if _AUDIO_HANDLE is None:
+        return
+    scene = bpy.context.scene
+    if scene is None or not hasattr(scene, "bpmav_settings"):
+        return
+    fps = scene.render.fps / scene.render.fps_base
+    elapsed = (
+        scene.frame_current
+        - scene.frame_start
+        - scene.bpmav_settings.audio_offset_frames
+    ) / fps
+    if elapsed < 0:
+        stop_audio()
+        _AUTO_PLAYBACK_ACTIVE = False
+        _AUTO_AUDIO_ACTIVE = False
+        return
+    try:
+        _AUDIO_HANDLE.position = elapsed
+    except RuntimeError as exc:
+        _report_playback_error(exc)
 
 
 def set_audio_volume(volume):
@@ -58,9 +101,51 @@ def play_audio(filepath, start_seconds=0.0, volume=1.0):
         if not _AUDIO_HANDLE.status:
             stop_audio()
             raise RuntimeError("Blender no pudo iniciar la reproducción del WAV.")
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, aud.error) as exc:
         stop_audio()
         raise RuntimeError(f"No se pudo reproducir el archivo de audio: {exc}") from exc
+
+
+def _metronome_sounds():
+    global _METRONOME_SOUNDS
+    if _METRONOME_SOUNDS is None:
+        import aud
+
+        sample_rate = 44100
+        duration = 0.045
+        sample_count = int(sample_rate * duration)
+        time = np.arange(sample_count, dtype=np.float32) / sample_rate
+
+        def click(frequency):
+            envelope = np.exp(-time * 85.0)
+            samples = (np.sin(2.0 * np.pi * frequency * time) * envelope * 0.6)
+            return aud.Sound.buffer(samples.reshape((-1, 1)).astype(np.float32), sample_rate)
+
+        _METRONOME_SOUNDS = (click(1760.0), click(1100.0))
+    return _METRONOME_SOUNDS
+
+
+def _play_metronome_click(strong, volume):
+    global _AUDIO_DEVICE, _METRONOME_HANDLES
+    import aud
+
+    try:
+        if _AUDIO_DEVICE is None:
+            _AUDIO_DEVICE = aud.Device()
+        sound = _metronome_sounds()[0 if strong else 1]
+        active_handles = []
+        for handle in _METRONOME_HANDLES:
+            try:
+                if handle.status == aud.STATUS_PLAYING:
+                    active_handles.append(handle)
+            except RuntimeError:
+                continue
+        _METRONOME_HANDLES = active_handles
+        handle = _AUDIO_DEVICE.play(sound)
+        handle.volume = min(1.0, max(0.0, volume * (1.0 if strong else 0.72)))
+        _METRONOME_HANDLES.append(handle)
+    except aud.error as exc:
+        raise RuntimeError(f"No se pudo reproducir el clic del metrónomo: {exc}") from exc
 
 
 def _decode_pcm(raw, sample_width):
@@ -97,21 +182,25 @@ def load_waveform(filepath, bins=_CACHE_BINS):
             if channels < 1 or frame_count < 1 or sample_rate < 1:
                 raise ValueError("El archivo WAV no contiene audio válido.")
 
-            peak_values = np.zeros(bins, dtype=np.float32)
-            for bucket in range(bins):
-                begin = bucket * frame_count // bins
-                end = (bucket + 1) * frame_count // bins
-                if end <= begin:
-                    continue
-                source.setpos(begin)
+            minimum_values = np.full(bins, np.inf, dtype=np.float32)
+            maximum_values = np.full(bins, -np.inf, dtype=np.float32)
+            chunk_frames = 65536
+            for begin in range(0, frame_count, chunk_frames):
+                end = min(frame_count, begin + chunk_frames)
                 raw = source.readframes(end - begin)
                 samples = _decode_pcm(raw, sample_width)
                 usable = samples.size - (samples.size % channels)
                 if usable == 0:
                     continue
                 mono = samples[:usable].reshape((-1, channels)).mean(axis=1)
-                peak_values[bucket] = float(np.max(np.abs(mono)))
-            result = (peak_values, frame_count / sample_rate)
+                frame_indices = np.arange(begin, begin + mono.size, dtype=np.int64)
+                bucket_indices = frame_indices * bins // frame_count
+                np.minimum.at(minimum_values, bucket_indices, mono)
+                np.maximum.at(maximum_values, bucket_indices, mono)
+            empty_bins = ~np.isfinite(minimum_values)
+            minimum_values[empty_bins] = 0.0
+            maximum_values[empty_bins] = 0.0
+            result = (minimum_values, maximum_values, frame_count / sample_rate)
     except (wave.Error, EOFError) as exc:
         raise ValueError(f"No se pudo leer el WAV: {exc}") from exc
 
@@ -124,6 +213,16 @@ def _draw_lines(vertices, color):
         return
     shader = gpu.shader.from_builtin("UNIFORM_COLOR")
     batch = batch_for_shader(shader, "LINES", {"pos": vertices})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
+def _draw_triangles(vertices, color):
+    if not vertices:
+        return
+    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+    batch = batch_for_shader(shader, "TRIS", {"pos": vertices})
     shader.bind()
     shader.uniform_float("color", color)
     batch.draw(shader)
@@ -195,22 +294,44 @@ def _grid_vertices(scene, settings, region, x_min, x_max, bottom, top):
     return major, minor
 
 
-def _waveform_vertices(scene, region, bottom, top, peaks, duration):
+def _waveform_vertices(scene, region, bottom, top, minimum_values, maximum_values, duration):
     fps = scene.render.fps / scene.render.fps_base
     if fps <= 0.0 or duration <= 0.0:
         return []
     center_y = (bottom + top) * 0.5
-    amplitude_scale = max(1.0, (top - bottom) * 0.44)
-    vertices = []
+    sample_peak = max(
+        float(np.max(np.abs(minimum_values))),
+        float(np.max(np.abs(maximum_values))),
+        1e-6,
+    )
+    amplitude_scale = (top - bottom) * 0.44 / sample_peak
+    fill_vertices = []
+    contour_vertices = []
     for pixel_x in range(region.width):
         frame = region.view2d.region_to_view(pixel_x, 0)[0]
-        elapsed = (frame - scene.frame_start) / fps
+        elapsed = (frame - scene.frame_start - scene.bpmav_settings.audio_offset_frames) / fps
         if elapsed < 0.0 or elapsed >= duration:
             continue
-        bin_index = min(len(peaks) - 1, int(elapsed / duration * len(peaks)))
-        amplitude = max(1.0, float(peaks[bin_index]) * amplitude_scale)
-        vertices.extend(((pixel_x, center_y - amplitude), (pixel_x, center_y + amplitude)))
-    return vertices
+        bin_index = min(
+            len(minimum_values) - 1,
+            int(elapsed / duration * len(minimum_values)),
+        )
+        top_y = center_y - float(maximum_values[bin_index]) * amplitude_scale
+        bottom_y = center_y - float(minimum_values[bin_index]) * amplitude_scale
+        x_left = max(0, pixel_x - 0.5)
+        x_right = min(region.width, pixel_x + 0.5)
+        fill_vertices.extend(
+            (
+                (x_left, center_y), (x_left, top_y), (x_right, top_y),
+                (x_left, center_y), (x_right, top_y), (x_right, center_y),
+                (x_left, center_y), (x_right, center_y), (x_right, bottom_y),
+                (x_left, center_y), (x_right, bottom_y), (x_left, bottom_y),
+            )
+        )
+        contour_vertices.extend(
+            ((pixel_x, top_y), (pixel_x, bottom_y))
+        )
+    return fill_vertices, contour_vertices
 
 
 def _draw_overlay():
@@ -246,11 +367,19 @@ def _draw_overlay():
 
     if settings.audio_enabled and settings.audio_filepath:
         try:
-            peaks, duration = load_waveform(settings.audio_filepath)
-            waveform = _waveform_vertices(
-                scene, region, bottom, top, peaks, duration
+            minimum_values, maximum_values, duration = load_waveform(settings.audio_filepath)
+            fill_vertices, contour_vertices = _waveform_vertices(
+                scene,
+                region,
+                bottom,
+                top,
+                minimum_values,
+                maximum_values,
+                duration,
             )
-            _draw_lines(waveform, (*settings.audio_color, 0.95))
+            color = (*settings.audio_color, 0.8)
+            _draw_triangles(fill_vertices, color)
+            _draw_lines(contour_vertices, (*settings.audio_color, 1.0))
             blf.position(0, 8, top + 3, 0)
             blf.size(0, 11)
             blf.color(0, 0.95, 0.98, 1.0, 0.95)
@@ -268,6 +397,117 @@ def _draw_overlay():
             (1.0, 0.85, 0.2, 1.0),
         )
     gpu.state.blend_set("NONE")
+
+
+def _screen_is_playing():
+    window_manager = bpy.context.window_manager
+    return bool(
+        window_manager
+        and any(
+            window.screen and window.screen.is_animation_playing
+            for window in window_manager.windows
+        )
+    )
+
+
+def _current_frame(scene):
+    return float(scene.frame_current) + float(scene.frame_subframe)
+
+
+def _sync_audio_and_metronome():
+    global _AUTO_PLAYBACK_ACTIVE, _AUTO_AUDIO_ACTIVE
+    global _LAST_PLAYBACK_FRAME, _LAST_METRONOME_BEAT, _LAST_PLAYBACK_ERROR
+    if not bpy.app.background:
+        window_manager = bpy.context.window_manager
+        windows = window_manager.windows if window_manager else ()
+        scene = next((window.scene for window in windows if window.scene), None)
+    else:
+        scene = bpy.context.scene
+    if scene is None or not hasattr(scene, "bpmav_settings"):
+        return
+
+    settings = scene.bpmav_settings
+    playing = _screen_is_playing()
+    frame = _current_frame(scene)
+
+    if not playing:
+        if _AUTO_PLAYBACK_ACTIVE:
+            stop_audio()
+        _AUTO_PLAYBACK_ACTIVE = False
+        _AUTO_AUDIO_ACTIVE = False
+        _LAST_PLAYBACK_FRAME = None
+        _LAST_METRONOME_BEAT = None
+        return
+
+    if not settings.sync_audio_to_playback and not settings.metronome_enabled:
+        return
+
+    fps = scene.render.fps / scene.render.fps_base
+    if fps <= 0.0:
+        return
+    audio_started = False
+    if settings.sync_audio_to_playback and settings.audio_filepath and not _AUTO_AUDIO_ACTIVE:
+        elapsed = (frame - scene.frame_start - settings.audio_offset_frames) / fps
+        if elapsed >= 0.0:
+            try:
+                _minimum, _maximum, duration = load_waveform(settings.audio_filepath)
+                if elapsed < duration:
+                    play_audio(
+                        settings.audio_filepath,
+                        elapsed,
+                        settings.audio_volume,
+                    )
+                    audio_started = True
+                    _AUTO_AUDIO_ACTIVE = True
+                    _LAST_PLAYBACK_ERROR = None
+            except (OSError, RuntimeError, ValueError) as exc:
+                _report_playback_error(exc)
+
+    if audio_started or settings.metronome_enabled:
+        _AUTO_PLAYBACK_ACTIVE = True
+
+    if settings.metronome_enabled:
+        try:
+            from . import utils
+
+            beat_frames = utils.beat_seconds(settings) * fps
+            origin = utils.music_origin_frame(scene, settings)
+            beat_position = (frame - origin) / beat_frames
+            beat_index = math.floor(beat_position + 1e-6)
+            if _LAST_METRONOME_BEAT is None:
+                nearest = round(beat_position)
+                if abs(beat_position - nearest) < 0.08:
+                    beat_index = nearest
+                    _play_metronome_click(
+                        beat_index % settings.beats_per_bar == 0,
+                        settings.metronome_volume,
+                    )
+                _LAST_METRONOME_BEAT = beat_index
+            elif beat_index > _LAST_METRONOME_BEAT:
+                for passed_beat in range(_LAST_METRONOME_BEAT + 1, beat_index + 1):
+                    _play_metronome_click(
+                        passed_beat % settings.beats_per_bar == 0,
+                        settings.metronome_volume,
+                    )
+                _LAST_METRONOME_BEAT = beat_index
+        except (KeyError, ValueError, ZeroDivisionError, RuntimeError) as exc:
+            _report_playback_error(exc)
+            _LAST_METRONOME_BEAT = None
+
+    _LAST_PLAYBACK_FRAME = frame
+
+
+def _playback_timer():
+    _sync_audio_and_metronome()
+    return 0.03
+
+
+def _report_playback_error(exc):
+    global _LAST_PLAYBACK_ERROR
+    message = str(exc)
+    if message != _LAST_PLAYBACK_ERROR:
+        print(f"BPM Timeline audio: {message}")
+        _LAST_PLAYBACK_ERROR = message
 
 
 def _refresh_editors(_scene, _depsgraph=None):
@@ -288,11 +528,18 @@ def register():
         )
     if _refresh_editors not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(_refresh_editors)
+    if not bpy.app.timers.is_registered(_playback_timer):
+        bpy.app.timers.register(_playback_timer, first_interval=0.03, persistent=True)
 
 
 def unregister():
-    global _DRAW_HANDLE
+    global _DRAW_HANDLE, _LAST_PLAYBACK_ERROR, _AUTO_AUDIO_ACTIVE
     stop_audio()
+    reset_playback_sync()
+    _LAST_PLAYBACK_ERROR = None
+    _AUTO_AUDIO_ACTIVE = False
+    if bpy.app.timers.is_registered(_playback_timer):
+        bpy.app.timers.unregister(_playback_timer)
     if _DRAW_HANDLE is not None:
         bpy.types.SpaceDopeSheetEditor.draw_handler_remove(_DRAW_HANDLE, "WINDOW")
         _DRAW_HANDLE = None

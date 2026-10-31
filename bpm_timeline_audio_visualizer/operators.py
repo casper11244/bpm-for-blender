@@ -169,9 +169,15 @@ class BPMAV_OT_play_audio(bpy.types.Operator):
             self.report({"ERROR"}, "Selecciona un archivo WAV primero.")
             return {"CANCELLED"}
         try:
-            _peaks, duration = audio_visualizer.load_waveform(settings.audio_filepath)
+            _minimum, _maximum, duration = audio_visualizer.load_waveform(
+                settings.audio_filepath
+            )
             fps = utils.scene_fps(scene)
-            start_seconds = (scene.frame_current - scene.frame_start) / fps
+            start_seconds = (
+                scene.frame_current
+                - scene.frame_start
+                - settings.audio_offset_frames
+            ) / fps
             if start_seconds < 0.0 or start_seconds >= duration:
                 raise ValueError("El frame actual queda fuera de la duración del WAV.")
             audio_visualizer.play_audio(
@@ -182,6 +188,7 @@ class BPMAV_OT_play_audio(bpy.types.Operator):
         except (OSError, RuntimeError, ValueError, ZeroDivisionError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        audio_visualizer.reset_playback_sync()
         self.report({"INFO"}, "Reproduciendo WAV desde la posición del frame actual.")
         return {"FINISHED"}
 
@@ -193,5 +200,62 @@ class BPMAV_OT_stop_audio(bpy.types.Operator):
 
     def execute(self, _context):
         audio_visualizer.stop_audio()
+        audio_visualizer.reset_playback_sync()
         self.report({"INFO"}, "Reproducción detenida.")
         return {"FINISHED"}
+
+
+class BPMAV_OT_move_audio(bpy.types.Operator):
+    bl_idname = "bpmav.move_audio"
+    bl_label = "Mover audio en Timeline"
+    bl_description = "Arrastra horizontalmente en el Timeline para cambiar el inicio de la pista"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        if context.area is None or context.area.type != "DOPESHEET_EDITOR":
+            self.report({"ERROR"}, "Inicia este operador desde la barra lateral del Timeline.")
+            return {"CANCELLED"}
+        self._region = next(
+            (region for region in context.area.regions if region.type == "WINDOW"),
+            None,
+        )
+        if self._region is None:
+            self.report({"ERROR"}, "No se encontró la región de frames del Timeline.")
+            return {"CANCELLED"}
+        self._settings = context.scene.bpmav_settings
+        self._initial_offset = self._settings.audio_offset_frames
+        self._dragging = False
+        context.window_manager.modal_handler_add(self)
+        self.report({"INFO"}, "Haz clic y arrastra en el área de frames; Esc cancela.")
+        return {"RUNNING_MODAL"}
+
+    def _frame_at_mouse(self, window_x):
+        region_x = window_x - self._region.x
+        return self._region.view2d.region_to_view(region_x, 0)[0]
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            inside_x = self._region.x <= event.mouse_x <= self._region.x + self._region.width
+            inside_y = self._region.y <= event.mouse_y <= self._region.y + self._region.height
+            if inside_x and inside_y:
+                self._dragging = True
+                self._initial_mouse_frame = self._frame_at_mouse(event.mouse_x)
+                self._initial_offset = self._settings.audio_offset_frames
+            return {"RUNNING_MODAL"}
+        if event.type == "MOUSEMOVE":
+            if not self._dragging:
+                return {"RUNNING_MODAL"}
+            current_mouse_frame = self._frame_at_mouse(event.mouse_x)
+            self._settings.audio_offset_frames = (
+                self._initial_offset + current_mouse_frame - self._initial_mouse_frame
+            )
+            context.area.tag_redraw()
+            return {"RUNNING_MODAL"}
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE" and self._dragging:
+            self._dragging = False
+            return {"FINISHED"}
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self._settings.audio_offset_frames = self._initial_offset
+            context.area.tag_redraw()
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}

@@ -62,6 +62,10 @@ class BPMAV_PT_keyframes(bpy.types.Panel):
         layout.operator("bpmav.insert_keyframe", icon="KEY_HLT")
         layout.operator("bpmav.reanchor_owned_keys", icon="TIME")
         layout.label(text="Alcance: propiedad del objeto activo")
+        layout.separator()
+        layout.prop(settings, "snap_to_music", icon="SNAP_ON")
+        if settings.snap_to_music:
+            layout.label(text="Aplica divisiones primero; imán usa marcas BPM.")
 
 
 class BPMAV_PT_audio(bpy.types.Panel):
@@ -86,4 +90,39 @@ class BPMAV_PT_audio(bpy.types.Panel):
         layout.prop(settings, "audio_height")
         layout.prop(settings, "audio_color")
         layout.prop(settings, "audio_volume")
-        layout.label(text="Onda y subdivisiones siguen el zoom del Timeline.")
+        layout.prop(settings, "sync_audio_to_playback")
+        layout.prop(settings, "metronome_enabled")
+        if settings.metronome_enabled:
+            layout.prop(settings, "metronome_volume")
+        layout.prop(settings, "audio_offset_frames")
+        layout.label(text="La onda se mueve con Inicio de audio.")
+
+
+class BPMAV_PT_timeline_audio(bpy.types.Panel):
+    bl_label = "BPM Audio"
+    bl_idname = "BPMAV_PT_timeline_audio"
+    bl_space_type = "DOPESHEET_EDITOR"
+    bl_region_type = "UI"
+    bl_category = "BPM Audio"
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.bpmav_settings
+        layout.prop(settings, "audio_filepath")
+        row = layout.row(align=True)
+        row.operator("bpmav.load_audio", icon="FILE_FOLDER")
+        row.operator("bpmav.reload_audio", icon="FILE_REFRESH")
+        row = layout.row(align=True)
+        row.operator("bpmav.play_audio", icon="PLAY")
+        row.operator("bpmav.stop_audio", icon="PAUSE")
+        layout.operator("bpmav.move_audio", icon="ORIENTATION_GLOBAL")
+        layout.prop(settings, "audio_offset_frames")
+        layout.prop(settings, "audio_height")
+        layout.prop(settings, "audio_color")
+        layout.prop(settings, "audio_volume")
+        layout.prop(settings, "sync_audio_to_playback")
+        layout.prop(settings, "metronome_enabled")
+        if settings.metronome_enabled:
+            layout.prop(settings, "metronome_volume")
+        layout.prop(settings, "audio_enabled")
+        layout.label(text="Arrastra con Mover audio para recolocar la pista.")

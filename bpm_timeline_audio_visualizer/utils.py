@@ -78,6 +78,7 @@ def _update_audio_path(_self, _context):
     from . import audio_visualizer
 
     audio_visualizer.stop_audio()
+    audio_visualizer.reset_playback_sync()
     audio_visualizer.invalidate_cache()
     redraw_timeline_editors()
 
@@ -86,6 +87,37 @@ def _update_audio_volume(self, _context):
     from . import audio_visualizer
 
     audio_visualizer.set_audio_volume(self.audio_volume)
+
+
+def _update_audio_offset(_self, _context):
+    from . import audio_visualizer
+
+    audio_visualizer.update_audio_offset()
+    redraw_timeline_editors()
+
+
+def _update_snap_to_music(self, context):
+    if context is None or context.scene is None:
+        return
+    tool_settings = context.scene.tool_settings
+    if self.snap_to_music:
+        self.snap_previous_enabled = tool_settings.use_snap_anim
+        self.snap_previous_element = tool_settings.snap_anim_element
+        tool_settings.use_snap_anim = True
+        tool_settings.snap_anim_element = "MARKER"
+    else:
+        tool_settings.use_snap_anim = self.snap_previous_enabled
+        tool_settings.snap_anim_element = self.snap_previous_element
+
+
+def restore_snap_settings(scene):
+    if not hasattr(scene, "bpmav_settings"):
+        return
+    settings = scene.bpmav_settings
+    if settings.snap_to_music:
+        tool_settings = scene.tool_settings
+        tool_settings.use_snap_anim = settings.snap_previous_enabled
+        tool_settings.snap_anim_element = settings.snap_previous_element
 
 
 class BPMAV_Settings(bpy.types.PropertyGroup):
@@ -192,4 +224,35 @@ class BPMAV_Settings(bpy.types.PropertyGroup):
     )
     audio_enabled: BoolProperty(
         name="Mostrar overlay", default=True, update=_update_timeline
+    )
+    audio_offset_frames: FloatProperty(
+        name="Inicio de audio (frame)",
+        description="Frame de inicio de la pista de audio",
+        default=0.0,
+        update=_update_audio_offset,
+    )
+    sync_audio_to_playback: BoolProperty(
+        name="Audio con Play de Blender",
+        description="Iniciar y detener el audio junto con la reproducción de la animación",
+        default=True,
+    )
+    metronome_enabled: BoolProperty(
+        name="Metrónomo durante Play", default=False
+    )
+    metronome_volume: FloatProperty(name="Volumen metrónomo", default=0.7, min=0.0, max=1.0)
+    snap_to_music: BoolProperty(
+        name="Imán prioriza marcas BPM",
+        description="Configurar el imán de animación para ajustar a marcas y divisiones BPM, no a keyframes",
+        default=False,
+        update=_update_snap_to_music,
+    )
+    snap_previous_enabled: BoolProperty(default=False, options={"HIDDEN"})
+    snap_previous_element: EnumProperty(
+        items=(
+            ("FRAME", "Frame", ""),
+            ("SECOND", "Second", ""),
+            ("MARKER", "Marker", ""),
+        ),
+        default="FRAME",
+        options={"HIDDEN"},
     )
