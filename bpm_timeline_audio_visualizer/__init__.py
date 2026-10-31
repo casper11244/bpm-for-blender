@@ -24,6 +24,8 @@ _CLASSES = (
     operators.BPMAV_OT_reanchor_keys,
     operators.BPMAV_OT_load_audio,
     operators.BPMAV_OT_reload_audio,
+    operators.BPMAV_OT_play_audio,
+    operators.BPMAV_OT_stop_audio,
     panels.BPMAV_PT_timeline,
     panels.BPMAV_PT_keyframes,
     panels.BPMAV_PT_audio,

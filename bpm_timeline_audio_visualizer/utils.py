@@ -58,10 +58,34 @@ def calculated_keyframe(scene, settings):
     )
 
 
+def redraw_timeline_editors():
+    window_manager = bpy.context.window_manager
+    if window_manager is None:
+        return
+    for window in window_manager.windows:
+        if window.screen is None:
+            continue
+        for area in window.screen.areas:
+            if area.type == "DOPESHEET_EDITOR":
+                area.tag_redraw()
+
+
+def _update_timeline(_self, _context):
+    redraw_timeline_editors()
+
+
 def _update_audio_path(_self, _context):
     from . import audio_visualizer
 
+    audio_visualizer.stop_audio()
     audio_visualizer.invalidate_cache()
+    redraw_timeline_editors()
+
+
+def _update_audio_volume(self, _context):
+    from . import audio_visualizer
+
+    audio_visualizer.set_audio_volume(self.audio_volume)
 
 
 class BPMAV_Settings(bpy.types.PropertyGroup):
@@ -72,6 +96,7 @@ class BPMAV_Settings(bpy.types.PropertyGroup):
         min=0.001,
         max=1000.0,
         precision=2,
+        update=_update_timeline,
     )
     beat_unit: EnumProperty(
         name="Unidad de pulso",
@@ -84,15 +109,25 @@ class BPMAV_Settings(bpy.types.PropertyGroup):
             ("SIXTEENTH", "Semicorchea", "Un cuarto de negra por pulso"),
         ),
         default="QUARTER",
+        update=_update_timeline,
     )
-    enable_binary: BoolProperty(name="Binarias", default=True)
-    enable_ternary: BoolProperty(name="Tresillos", default=False)
-    enable_tuplets: BoolProperty(name="Quintillos / septillos", default=False)
-    beats_per_bar: IntProperty(name="Pulsos por compás", default=4, min=1, max=32)
+    enable_binary: BoolProperty(name="Binarias", default=True, update=_update_timeline)
+    enable_ternary: BoolProperty(name="Tresillos", default=False, update=_update_timeline)
+    enable_tuplets: BoolProperty(
+        name="Quintillos / septillos", default=False, update=_update_timeline
+    )
+    beats_per_bar: IntProperty(
+        name="Pulsos por compás", default=4, min=1, max=32, update=_update_timeline
+    )
     offset_beats: FloatProperty(
-        name="Desfase (pulsos)", description="Desfase musical desde el frame inicial", default=0.0
+        name="Desfase (pulsos)",
+        description="Desfase musical desde el frame inicial",
+        default=0.0,
+        update=_update_timeline,
     )
-    duration_bars: IntProperty(name="Compases", default=8, min=1, max=256)
+    duration_bars: IntProperty(
+        name="Compases", default=8, min=1, max=256, update=_update_timeline
+    )
     keyframe_mode: EnumProperty(
         name="Modo de inserción",
         items=(
@@ -117,12 +152,32 @@ class BPMAV_Settings(bpy.types.PropertyGroup):
     )
     marker_registry: StringProperty(default="[]", options={"HIDDEN"})
     key_registry: StringProperty(default="[]", options={"HIDDEN"})
+    marker_color: FloatVectorProperty(
+        name="Color de pulso",
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 0.45, 0.08),
+        update=_update_timeline,
+    )
+    division_color: FloatVectorProperty(
+        name="Color de subdivisión",
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(0.2, 0.65, 1.0),
+        update=_update_timeline,
+    )
     audio_filepath: StringProperty(
         name="Archivo WAV",
         subtype="FILE_PATH",
         update=_update_audio_path,
     )
-    audio_height: IntProperty(name="Alto overlay", default=90, min=30, max=240)
+    audio_height: IntProperty(
+        name="Alto overlay", default=90, min=30, max=240, update=_update_timeline
+    )
     audio_color: FloatVectorProperty(
         name="Color de onda",
         subtype="COLOR",
@@ -130,5 +185,11 @@ class BPMAV_Settings(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
         default=(0.15, 0.75, 0.95),
+        update=_update_timeline,
     )
-    audio_enabled: BoolProperty(name="Mostrar overlay", default=True)
+    audio_volume: FloatProperty(
+        name="Volumen", default=1.0, min=0.0, max=1.0, update=_update_audio_volume
+    )
+    audio_enabled: BoolProperty(
+        name="Mostrar overlay", default=True, update=_update_timeline
+    )

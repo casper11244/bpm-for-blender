@@ -19,6 +19,7 @@ class BPMAV_OT_apply_divisions(bpy.types.Operator):
         except (ValueError, RuntimeError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        utils.redraw_timeline_editors()
         self.report({"INFO"}, f"Se crearon {count} marcas musicales.")
         return {"FINISHED"}
 
@@ -36,6 +37,7 @@ class BPMAV_OT_clear_divisions(bpy.types.Operator):
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        utils.redraw_timeline_editors()
         self.report({"INFO"}, f"Se eliminaron {removed} marcas de la extensión.")
         return {"FINISHED"}
 
@@ -152,4 +154,44 @@ class BPMAV_OT_reload_audio(bpy.types.Operator):
         for area in context.screen.areas:
             area.tag_redraw()
         self.report({"INFO"}, "Forma de onda recargada.")
+        return {"FINISHED"}
+
+
+class BPMAV_OT_play_audio(bpy.types.Operator):
+    bl_idname = "bpmav.play_audio"
+    bl_label = "Reproducir WAV"
+    bl_description = "Reproducir el WAV desde la posición temporal del frame actual"
+
+    def execute(self, context):
+        scene = context.scene
+        settings = scene.bpmav_settings
+        if not settings.audio_filepath:
+            self.report({"ERROR"}, "Selecciona un archivo WAV primero.")
+            return {"CANCELLED"}
+        try:
+            _peaks, duration = audio_visualizer.load_waveform(settings.audio_filepath)
+            fps = utils.scene_fps(scene)
+            start_seconds = (scene.frame_current - scene.frame_start) / fps
+            if start_seconds < 0.0 or start_seconds >= duration:
+                raise ValueError("El frame actual queda fuera de la duración del WAV.")
+            audio_visualizer.play_audio(
+                settings.audio_filepath,
+                start_seconds=start_seconds,
+                volume=settings.audio_volume,
+            )
+        except (OSError, RuntimeError, ValueError, ZeroDivisionError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Reproduciendo WAV desde la posición del frame actual.")
+        return {"FINISHED"}
+
+
+class BPMAV_OT_stop_audio(bpy.types.Operator):
+    bl_idname = "bpmav.stop_audio"
+    bl_label = "Detener audio"
+    bl_description = "Detener la reproducción WAV iniciada por la extensión"
+
+    def execute(self, _context):
+        audio_visualizer.stop_audio()
+        self.report({"INFO"}, "Reproducción detenida.")
         return {"FINISHED"}
